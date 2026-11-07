@@ -28,6 +28,12 @@ jobs:
           ref: 4ecccb4131e16217188f812a72d4ec9cf7d924bb
           fetch-depth: 0
           persist-credentials: false
+      - name: Prepare bounded workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/tests .ci/tmp memory-artifacts
+          test "$(df -Pk . | awk 'NR==2{print $4}')" -gt 8388608
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
           go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
@@ -101,8 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          du -sk .ci memory-artifacts
-          test "$(du -sk .ci | cut -f1)" -lt 6815744
-          test "$(du -sk memory-artifacts | cut -f1)" -lt 16384
+          if [ -d .ci ]; then du -sk .ci; test "$(du -sk .ci | cut -f1)" -lt 6815744; fi
+          if [ -d memory-artifacts ]; then du -sk memory-artifacts; test "$(du -sk memory-artifacts | cut -f1)" -lt 16384; fi
           git worktree remove --force .ci/base || true
           rm -rf .ci/go-cache .ci/mod-cache .ci/tests .ci/tmp
