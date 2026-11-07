@@ -62,6 +62,19 @@ jobs:
           # asynchronous decoder accepts these damaged checksums; valid MRS fixtures
           # are compared below, while binary reader compatibility runs on both.
           (cd .ci/base; go test ./component/trie ./component/cidr)
+      - name: Adapt legacy lint configuration for the declared Go version
+        if: matrix.go == '1.20'
+        shell: bash
+        run: |
+          python3 - <<'CODE'
+          from pathlib import Path
+          import re
+          s=Path('.golangci.yaml').read_text()
+          old="  staticcheck:\n    go: '1.19'\n"
+          assert s.count(old)==1 and not s.startswith('run:')
+          assert re.search(r'^go 1\.20(?:\s|$)',Path('go.mod').read_text(),re.M)
+          Path('.ci/mrs-lint.yaml').write_text('run:\n  go: "1.20"\n'+s.replace(old,''))
+          CODE
       - name: Changed MRS code lint
         if: matrix.go == '1.20'
         uses: golangci/golangci-lint-action@v6
@@ -69,8 +82,12 @@ jobs:
           GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.ci/lint-cache
         with:
           version: v1.64.8
-          args: --timeout=15m --new-from-rev=478af2a57c48bdb8e85f6ed93b2c3735e90ceabd ./component/trie ./component/cidr ./rules/provider
+          verify: false
+          args: --config=.ci/mrs-lint.yaml --timeout=15m --new-from-rev=478af2a57c48bdb8e85f6ed93b2c3735e90ceabd ./component/trie ./component/cidr ./rules/provider
           skip-cache: true
+      - name: Verify the generated lint configuration
+        if: matrix.go == '1.20'
+        run: '"$HOME/golangci-lint-1.64.8-linux-amd64/golangci-lint" config verify --config=.ci/mrs-lint.yaml'
       - name: Race
         if: matrix.go == '1.26'
         shell: bash
