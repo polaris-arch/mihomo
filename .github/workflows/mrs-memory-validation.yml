@@ -58,7 +58,10 @@ jobs:
         run: |
           set -euo pipefail
           go test ./component/trie ./component/cidr ./rules/provider
-          (cd .ci/base; go test ./component/trie ./component/cidr ./rules/provider)
+          # Corrupt-frame assertions exercise the synchronous decoder. The upstream
+          # asynchronous decoder accepts these damaged checksums; valid MRS fixtures
+          # are compared below, while binary reader compatibility runs on both.
+          (cd .ci/base; go test ./component/trie ./component/cidr)
       - name: Race
         if: matrix.go == '1.26'
         shell: bash
@@ -110,4 +113,5 @@ jobs:
           if [ -d .ci ]; then du -sk .ci; test "$(du -sk .ci | cut -f1)" -lt 6815744; fi
           if [ -d memory-artifacts ]; then du -sk memory-artifacts; test "$(du -sk memory-artifacts | cut -f1)" -lt 16384; fi
           git worktree remove --force .ci/base || true
-          rm -rf .ci/go-cache .ci/mod-cache .ci/tests .ci/tmp
+          if [ -d .ci/mod-cache ]; then go clean -modcache; fi
+          rm -rf .ci/go-cache .ci/tests .ci/tmp
