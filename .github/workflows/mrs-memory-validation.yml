@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 4ecccb4131e16217188f812a72d4ec9cf7d924bb
+          ref: b3c35ab197d8d21328e5f8f77847186de932d6b6
           fetch-depth: 0
           persist-credentials: false
       - name: Prepare bounded workspace
@@ -46,7 +46,7 @@ jobs:
           # One ephemeral slot: 6 GiB caches, 512 MiB scratch, 16 MiB evidence.
           mkdir -p .ci/tests .ci/tmp memory-artifacts
           test "$(df -Pk . | awk 'NR==2{print $4}')" -gt 8388608
-          test "$(git rev-parse HEAD)" = 4ecccb4131e16217188f812a72d4ec9cf7d924bb
+          test "$(git rev-parse HEAD)" = b3c35ab197d8d21328e5f8f77847186de932d6b6
           printf 'tested_source=%s\nupstream=478af2a57c48bdb8e85f6ed93b2c3735e90ceabd\n' "$(git rev-parse HEAD)" | tee memory-artifacts/identity.txt
           go version | tee -a memory-artifacts/identity.txt
           git worktree add --detach .ci/base HEAD
@@ -62,6 +62,15 @@ jobs:
           # asynchronous decoder accepts these damaged checksums; valid MRS fixtures
           # are compared below, while binary reader compatibility runs on both.
           (cd .ci/base; go test ./component/trie ./component/cidr)
+      - name: Changed MRS code lint
+        if: matrix.go == '1.20'
+        uses: golangci/golangci-lint-action@v6
+        env:
+          GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.ci/lint-cache
+        with:
+          version: v1.64.8
+          args: --timeout=15m --new-from-rev=478af2a57c48bdb8e85f6ed93b2c3735e90ceabd ./component/trie ./component/cidr ./rules/provider
+          skip-cache: true
       - name: Race
         if: matrix.go == '1.26'
         shell: bash
@@ -114,4 +123,4 @@ jobs:
           if [ -d memory-artifacts ]; then du -sk memory-artifacts; test "$(du -sk memory-artifacts | cut -f1)" -lt 16384; fi
           git worktree remove --force .ci/base || true
           if [ -d .ci/mod-cache ]; then go clean -modcache; fi
-          rm -rf .ci/go-cache .ci/tests .ci/tmp
+          rm -rf .ci/go-cache .ci/tests .ci/tmp .ci/lint-cache
