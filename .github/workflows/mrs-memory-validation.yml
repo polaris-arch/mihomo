@@ -1,0 +1,108 @@
+name: MRS memory validation
+'on':
+  push:
+    branches: [ci/mrs-memory-validation]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        go: ['1.26', '1.20']
+    env:
+      GOMAXPROCS: '4'
+      GOAMD64: v1
+      GOTOOLCHAIN: local
+      SKIP_INTEROP_TEST: '1'
+      GOFLAGS: -mod=readonly
+      GOCACHE: ${{ github.workspace }}/.ci/go-cache
+      GOMODCACHE: ${{ github.workspace }}/.ci/mod-cache
+      GOTMPDIR: ${{ github.workspace }}/.ci/tmp
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 4ecccb4131e16217188f812a72d4ec9cf7d924bb
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Identity and budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          # One ephemeral slot: 6 GiB caches, 512 MiB scratch, 16 MiB evidence.
+          mkdir -p .ci/tests .ci/tmp memory-artifacts
+          test "$(df -Pk . | awk 'NR==2{print $4}')" -gt 8388608
+          test "$(git rev-parse HEAD)" = 4ecccb4131e16217188f812a72d4ec9cf7d924bb
+          printf 'tested_source=%s\nupstream=478af2a57c48bdb8e85f6ed93b2c3735e90ceabd\n' "$(git rev-parse HEAD)" | tee memory-artifacts/identity.txt
+          go version | tee -a memory-artifacts/identity.txt
+          git worktree add --detach .ci/base HEAD
+          git -C .ci/base restore --source=478af2a57c48bdb8e85f6ed93b2c3735e90ceabd -- component/trie/domain_set_bin.go component/cidr/ipcidr_set_bin.go rules/provider/mrs_reader.go
+          git -C .ci/base diff --binary > memory-artifacts/baseline-reversion.patch
+          sha256sum memory-artifacts/baseline-reversion.patch | tee -a memory-artifacts/identity.txt
+      - name: Compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./component/trie ./component/cidr ./rules/provider
+          (cd .ci/base; go test ./component/trie ./component/cidr ./rules/provider)
+      - name: Race
+        if: matrix.go == '1.26'
+        shell: bash
+        run: CGO_ENABLED=1 go test -race ./component/trie ./component/cidr ./rules/provider
+      - name: Allocation comparison
+        if: matrix.go == '1.26'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          for variant in baseline candidate; do
+            if [ "$variant" = baseline ]; then source_dir="$root/.ci/base"; else source_dir="$root"; fi
+            for component in trie cidr provider; do
+              if [ "$component" = provider ]; then package=./rules/provider; else package=./component/$component; fi
+              (cd "$source_dir"; go test -c -o "$root/.ci/tests/$variant-$component" "$package")
+            done
+          done
+          for round in 1 2 3; do
+            if [ "$round" = 2 ]; then order="candidate baseline"; else order="baseline candidate"; fi
+            for variant in $order; do
+              for component in trie cidr provider; do
+                .ci/tests/"$variant-$component" -test.run='^$' -test.bench='(BinaryReadMemory|MrsReadMemory)$' -test.benchmem -test.benchtime=500ms | tee -a "memory-artifacts/$variant-bench.txt"
+              done
+            done
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          import json,re,statistics
+          result={}
+          for variant in ['baseline','candidate']:
+              rows={}
+              for line in Path('memory-artifacts/'+variant+'-bench.txt').read_text().splitlines():
+                  if not line.startswith('Benchmark'):continue
+                  name=line.split()[0].rsplit('-',1)[0]
+                  rows.setdefault(name,[]).append([int(re.search(r'(\d+) B/op',line)[1]),int(re.search(r'(\d+) allocs/op',line)[1])])
+              assert len(rows)==3 and all(len(v)==3 for v in rows.values())
+              result[variant]={name:{'bytes_per_op':statistics.median(x[0] for x in values),'allocs_per_op':statistics.median(x[1] for x in values)} for name,values in rows.items()}
+          for name,old in result['baseline'].items():
+              new=result['candidate'][name]
+              assert new['bytes_per_op']<old['bytes_per_op'] and new['allocs_per_op']<old['allocs_per_op'],name
+          Path('memory-artifacts/allocation-summary.json').write_text(json.dumps(result,indent=2))
+          print(json.dumps(result,indent=2))
+          PY
+      - name: Budget and cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          du -sk .ci memory-artifacts
+          test "$(du -sk .ci | cut -f1)" -lt 6815744
+          test "$(du -sk memory-artifacts | cut -f1)" -lt 16384
+          git worktree remove --force .ci/base || true
+          rm -rf .ci/go-cache .ci/mod-cache .ci/tests .ci/tmp
